@@ -16,3 +16,5 @@ docker compose up -d
 ## Warning
 You must use another reverse proxy (like Nginx Proxy Manager) to expose this nginx instance to the internet. This nginx instance is only used to link the frontend and the backend API together, and should not be exposed directly to the internet.
 Otherwise, the IP address of the client can be spoofed, and the backend API will not be able to get the real IP address of the client.
+
+## Added GitHub Actions
