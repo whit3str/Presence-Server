@@ -1,41 +1,92 @@
-name: Build Docker Images
+name: Build & Push Docker Images
 
 on:
   push:
-    branches: [ "main" ] # Déclenche l'action à chaque push sur la branche main
+    branches: [master]
+    paths:
+      - "backend/**"
+      - "mii-generator-server"        # bump du submodule
+      - "deploy/**"
+      - "docker-compose.yml"
+      - ".github/workflows/build-images.yml"
+  workflow_dispatch: {}
 
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
-    steps:
-      - name: Checkout du code
-        uses: actions/checkout@v4
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: backend
+            context: backend
+            dockerfile: backend/Dockerfile
+            build-args: |
+              DEBUG=false
 
-      - name: Configuration de Docker Buildx
+          - name: mii-renderer
+            context: mii-generator-server
+            dockerfile: mii-generator-server/Dockerfile.ffl-testing-renderer
+
+          - name: mii-web-server
+            context: mii-generator-server
+            dockerfile: mii-generator-server/Dockerfile.ffl-testing-web-server
+
+          - name: service-logs
+            context: deploy/service-logs
+            dockerfile: deploy/service-logs/Dockerfile
+
+          - name: service-build-firm
+            context: deploy/build-firm
+            dockerfile: deploy/build-firm/Dockerfile
+
+          # nginx (frontend + reverse proxy interne) volontairement exclu :
+          # un proxy host (3ds.muzungo.fr) existe déjà côté Nicolas.
+          # Décommenter si le dashboard web doit quand même être servi :
+          # - name: frontend
+          #   context: presence-frontend
+          #   dockerfile: presence-frontend/Dockerfile
+          #   build-args: |
+          #     VITE_TURNSTILE_SITEKEY=${{ secrets.TURNSTILE_SITEKEY }}
+
+    steps:
+      - name: Checkout (avec submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Connexion au GitHub Container Registry (GHCR)
+      - name: Login GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Si les Dockerfiles sont dans le projet, vous pouvez les build ainsi :
-      - name: Build and Push Backend
-        uses: docker/build-push-action@v5
+      - name: Metadata (tags/labels)
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          context: ./backend # À ajuster selon l'emplacement du code ou du sous-module
-          push: true
-          tags: ghcr.io/${{ github.repository_owner }}/presence-backend:latest
-          
-      - name: Build and Push Frontend
-        uses: docker/build-push-action@v5
+          images: ghcr.io/${{ github.repository_owner }}/presence-${{ matrix.name }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
         with:
-          context: ./frontend # À ajuster selon l'emplacement
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/presence-frontend:latest
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: ${{ matrix.build-args }}
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
